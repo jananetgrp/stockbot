@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Stock Market Monitor for Raspberry Pi
-Tracks major indices (S&P 500, DOW, NASDAQ), VIX, and sector ETFs
-Compares daily and weekly changes, sends updates via Telegram bot
+Tracks major indices, crypto (BTC), commodities (Gold), forex (USD-INR, DXY),
+VIX, and sector ETFs. Compares day/week/month/year changes for key assets.
+Sends updates via Telegram bot.
 """
 
 import os
@@ -48,13 +49,20 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-CATEGORIES = ["Major Indices", "Volatility", "Sector ETFs"]
+CATEGORIES = ["Major Indices", "Crypto", "Commodities", "Forex / USD", "Volatility", "Sector ETFs"]
 
 SYMBOLS = {
     # ── Major Indices ──
     "SP500"  : {"yahoo": "%5EGSPC", "display": "S&P 500",          "category": "Major Indices"},
     "DOW"    : {"yahoo": "%5EDJI",  "display": "DOW Jones",         "category": "Major Indices"},
     "NASDAQ" : {"yahoo": "%5EIXIC", "display": "NASDAQ",            "category": "Major Indices"},
+    # ── Crypto ──
+    "BTC"    : {"yahoo": "BTC-USD",   "display": "Bitcoin (BTC)",   "category": "Crypto"},
+    # ── Commodities ──
+    "GOLD"   : {"yahoo": "GC%3DF",    "display": "Gold",            "category": "Commodities"},
+    # ── Forex / USD ──
+    "USDINR" : {"yahoo": "INR%3DX",   "display": "USD/INR",         "category": "Forex / USD"},
+    "DXY"    : {"yahoo": "DX-Y.NYB",  "display": "USD Index (DXY)", "category": "Forex / USD"},
     # ── Volatility ──
     "VIX"    : {"yahoo": "%5EVIX",  "display": "VIX (Fear Index)",  "category": "Volatility"},
     # ── Sector ETFs ──
@@ -65,18 +73,27 @@ SYMBOLS = {
     "XLU"    : {"yahoo": "XLU",     "display": "Utilities",         "category": "Sector ETFs"},
 }
 
+TRACKED_SYMBOLS = ["BTC", "GOLD", "USDINR", "DXY"]
+
 previous_prices: dict = {}
 
 
 # ─── Data fetching ────────────────────────────
 
-def fetch_yahoo(symbol_encoded: str) -> dict | None:
-    """Fetch current price, daily change, and weekly change from Yahoo Finance."""
+def _first_close(closes: list) -> float | None:
+    """Return the first non-None close from a list of candle closes."""
+    for c in closes:
+        if c is not None:
+            return c
+    return None
+
+
+def fetch_yahoo(symbol_encoded: str, extended: bool = False) -> dict | None:
+    """Fetch current price, daily/weekly change from Yahoo Finance.
+    If extended=True, also fetch month and year comparison data."""
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # Fetch current price + previous close from 1d range
     url_1d = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol_encoded}?interval=1m&range=1d"
-    # Fetch 5-day daily candles for week-ago close
     url_5d = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol_encoded}?interval=1d&range=5d"
 
     try:
@@ -98,20 +115,50 @@ def fetch_yahoo(symbol_encoded: str) -> dict | None:
             r5.raise_for_status()
             data5 = r5.json()
             closes = data5["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-            # First close in the 5-day window is ~1 week ago
-            if closes and closes[0] is not None:
-                week_ago_close = closes[0]
+            first = _first_close(closes)
+            if first is not None:
+                week_ago_close = first
                 week_change = price - week_ago_close
                 week_change_pct = (week_change / week_ago_close * 100) if week_ago_close else None
         except Exception as e:
             log.warning(f"Yahoo 5d fetch error ({symbol_encoded}): {e}")
 
-        return {
+        result = {
             "price": price, "prev_close": prev,
             "change": change, "change_pct": pct,
             "week_ago_close": week_ago_close,
             "week_change": week_change, "week_change_pct": week_change_pct,
         }
+
+        # Extended timeframes: month and year
+        if extended and price is not None:
+            for range_str, interval, key_prefix in [
+                ("1mo", "1d", "month"),
+                ("1y", "1wk", "year"),
+            ]:
+                try:
+                    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+                           f"{symbol_encoded}?interval={interval}&range={range_str}")
+                    rx = requests.get(url, headers=headers, timeout=10)
+                    rx.raise_for_status()
+                    dx = rx.json()
+                    closes = dx["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+                    first = _first_close(closes)
+                    if first is not None:
+                        result[f"{key_prefix}_ago_close"] = first
+                        result[f"{key_prefix}_change"] = price - first
+                        result[f"{key_prefix}_change_pct"] = (price - first) / first * 100
+                    else:
+                        result[f"{key_prefix}_ago_close"] = None
+                        result[f"{key_prefix}_change"] = None
+                        result[f"{key_prefix}_change_pct"] = None
+                except Exception as e:
+                    log.warning(f"Yahoo {range_str} fetch error ({symbol_encoded}): {e}")
+                    result[f"{key_prefix}_ago_close"] = None
+                    result[f"{key_prefix}_change"] = None
+                    result[f"{key_prefix}_change_pct"] = None
+
+        return result
     except Exception as e:
         log.error(f"Yahoo fetch error ({symbol_encoded}): {e}")
         return None
@@ -137,7 +184,8 @@ def fetch_alpha_vantage(symbol: str) -> dict | None:
 def get_quote(name: str) -> dict | None:
     info = SYMBOLS[name]
     if USE_YAHOO:
-        return fetch_yahoo(info["yahoo"])
+        extended = name in TRACKED_SYMBOLS
+        return fetch_yahoo(info["yahoo"], extended=extended)
     else:
         return fetch_alpha_vantage(name)
 
@@ -214,6 +262,46 @@ def generate_notes(quotes: dict) -> list[str]:
             direction = "rallied" if wpct > 0 else "declined"
             notes.append(f"📊 {display} {direction} {wpct:+.2f}% this week")
 
+    # Bitcoin sentiment
+    btc = quotes.get("BTC")
+    if btc and btc["price"] is not None:
+        btc_pct = btc.get("change_pct")
+        if btc_pct is not None:
+            if btc_pct >= 5:
+                notes.append(f"🚀 Bitcoin surging {btc_pct:+.2f}% — strong crypto momentum")
+            elif btc_pct <= -5:
+                notes.append(f"💥 Bitcoin dropping {btc_pct:+.2f}% — crypto sell-off")
+        btc_price = btc["price"]
+        if btc_price >= 100000:
+            notes.append(f"🪙 Bitcoin above $100K at ${btc_price:,.0f}")
+
+    # Gold sentiment
+    gold = quotes.get("GOLD")
+    if gold and gold.get("change_pct") is not None:
+        gold_pct = gold["change_pct"]
+        if gold_pct >= 1.5:
+            notes.append(f"🥇 Gold rallying {gold_pct:+.2f}% — safe-haven demand")
+        elif gold_pct <= -1.5:
+            notes.append(f"📉 Gold falling {gold_pct:+.2f}% — risk appetite returning")
+
+    # USD strength via DXY
+    dxy = quotes.get("DXY")
+    if dxy and dxy.get("change_pct") is not None:
+        dxy_pct = dxy["change_pct"]
+        if dxy_pct >= 0.5:
+            notes.append(f"💵 USD strengthening (DXY {dxy_pct:+.2f}%) — headwind for commodities")
+        elif dxy_pct <= -0.5:
+            notes.append(f"📉 USD weakening (DXY {dxy_pct:+.2f}%) — tailwind for commodities")
+
+    # USD-INR movement
+    usdinr = quotes.get("USDINR")
+    if usdinr and usdinr.get("change_pct") is not None:
+        inr_pct = usdinr["change_pct"]
+        if inr_pct >= 0.3:
+            notes.append(f"🇮🇳 Rupee weakening vs USD ({inr_pct:+.2f}%)")
+        elif inr_pct <= -0.3:
+            notes.append(f"🇮🇳 Rupee strengthening vs USD ({inr_pct:+.2f}%)")
+
     # Sector divergence: Utilities up + Financials down = risk-off
     xlu = quotes.get("XLU")
     xlf = quotes.get("XLF")
@@ -223,6 +311,12 @@ def generate_notes(quotes: dict) -> list[str]:
             notes.append("🛡️ Utilities up, Financials down — risk-off signal")
         elif xlf["change_pct"] > 0.3 and xlu["change_pct"] < -0.3:
             notes.append("🚀 Financials up, Utilities down — risk-on signal")
+
+    # Cross-asset: Gold up + USD down = inflation hedge signal
+    if (gold and dxy and gold.get("change_pct") is not None
+            and dxy.get("change_pct") is not None):
+        if gold["change_pct"] > 0.5 and dxy["change_pct"] < -0.3:
+            notes.append("🛡️ Gold up + USD down — inflation hedge / risk-off positioning")
 
     return notes
 
@@ -286,6 +380,31 @@ def check_and_notify():
                     )
 
             previous_prices[name] = price
+
+    # ── Timeframe comparison for tracked symbols ──
+    lines.append("\n<b>━━ Timeframe Comparison ━━</b>")
+    timeframes = [
+        ("change_pct",       "Day"),
+        ("week_change_pct",  "Wk"),
+        ("month_change_pct", "Mo"),
+        ("year_change_pct",  "Yr"),
+    ]
+    for name in TRACKED_SYMBOLS:
+        q = quotes.get(name)
+        if q is None:
+            lines.append(f"  <b>{SYMBOLS[name]['display']}</b>: ⚠️ data unavailable")
+            continue
+        display = SYMBOLS[name]["display"]
+        parts = []
+        for key, label in timeframes:
+            val = q.get(key)
+            if val is not None:
+                icon = "🟢" if val >= 0 else "🔴"
+                parts.append(f"{label}: {icon}{val:+.2f}%")
+            else:
+                parts.append(f"{label}: —")
+        lines.append(f"  <b>{display}</b>")
+        lines.append(f"    {' │ '.join(parts)}")
 
     # Smart notes
     notes = generate_notes(quotes)
