@@ -60,6 +60,8 @@ SYMBOLS = {
     "BTC"    : {"yahoo": "BTC-USD",   "display": "Bitcoin (BTC)",   "category": "Crypto"},
     # ── Commodities ──
     "GOLD"   : {"yahoo": "GC%3DF",    "display": "Gold",            "category": "Commodities"},
+    "CRUDE"  : {"yahoo": "CL%3DF",    "display": "Crude Oil",       "category": "Commodities"},
+    "SILVER" : {"yahoo": "SI%3DF",    "display": "Silver",          "category": "Commodities"},
     # ── Forex / USD ──
     "USDINR" : {"yahoo": "INR%3DX",   "display": "USD/INR",         "category": "Forex / USD"},
     "DXY"    : {"yahoo": "DX-Y.NYB",  "display": "USD Index (DXY)", "category": "Forex / USD"},
@@ -73,7 +75,7 @@ SYMBOLS = {
     "XLU"    : {"yahoo": "XLU",     "display": "Utilities",         "category": "Sector ETFs"},
 }
 
-TRACKED_SYMBOLS = ["BTC", "GOLD", "USDINR", "DXY"]
+TRACKED_SYMBOLS = ["BTC", "GOLD", "CRUDE", "SILVER", "USDINR", "DXY"]
 
 previous_prices: dict = {}
 

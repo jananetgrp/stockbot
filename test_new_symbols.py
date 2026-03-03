@@ -14,6 +14,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 TEST_SYMBOLS = {
     "Bitcoin (BTC-USD)":    "BTC-USD",
     "Gold Futures (GC=F)":  "GC%3DF",
+    "Crude Oil (CL=F)":    "CL%3DF",
+    "Silver Futures (SI=F)": "SI%3DF",
     "USD-INR (INR=X)":     "INR%3DX",
     "USD Index DXY (DX-Y.NYB)": "DX-Y.NYB",
 }

@@ -11,6 +11,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 SYMBOLS = {
     "BTC":    "BTC-USD",
     "GOLD":   "GC%3DF",
+    "CRUDE":  "CL%3DF",
+    "SILVER": "SI%3DF",
     "USDINR": "INR%3DX",
     "DXY":    "DX-Y.NYB",
 }
